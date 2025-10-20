@@ -15,7 +15,7 @@ wss.on("connection", (ws) => {
       case "connect":
         const user = data.user;
         user.isOnline = true;
-        
+
         // Cập nhật hoặc thêm user mới
         const existingUserIndex = users.findIndex((u) => u.uid === user.uid);
         if (existingUserIndex !== -1) {
@@ -23,7 +23,7 @@ wss.on("connection", (ws) => {
         } else {
           users.push(user);
         }
-        
+
         // Lưu connection của user
         connectedUsers.set(user.uid, ws);
 
@@ -53,7 +53,7 @@ wss.on("connection", (ws) => {
 
       case "message_update":
         const updatedMessage = data.message;
-        const msgIndex = messages.findIndex(m => m.id === updatedMessage.id);
+        const msgIndex = messages.findIndex((m) => m.id === updatedMessage.id);
         if (msgIndex !== -1) {
           messages[msgIndex] = updatedMessage;
           broadcast({ type: "message_update", message: updatedMessage });
@@ -62,7 +62,7 @@ wss.on("connection", (ws) => {
 
       case "message_delete":
         const messageId = data.messageId;
-        const deleteIndex = messages.findIndex(m => m.id === messageId);
+        const deleteIndex = messages.findIndex((m) => m.id === messageId);
         if (deleteIndex !== -1) {
           messages.splice(deleteIndex, 1);
           broadcast({ type: "message_delete", messageId: messageId });
@@ -82,18 +82,22 @@ wss.on("connection", (ws) => {
 
       case "user_online":
         const onlineUid = data.uid;
-        const onlineUser = users.find(u => u.uid === onlineUid);
+        const onlineUser = users.find((u) => u.uid === onlineUid);
         if (onlineUser) {
           onlineUser.isOnline = true;
+          console.log("🟢 User online:", onlineUser.name);
+          // Gửi cho tất cả (bao gồm chính họ)
           broadcast({ type: "user_online", uid: onlineUid });
         }
         break;
 
       case "user_offline":
         const offlineUid = data.uid;
-        const offlineUser = users.find(u => u.uid === offlineUid);
+        const offlineUser = users.find((u) => u.uid === offlineUid);
         if (offlineUser) {
           offlineUser.isOnline = false;
+          console.log("🔴 User offline:", offlineUser.name);
+          // Gửi cho tất cả (bao gồm chính họ)
           broadcast({ type: "user_offline", uid: offlineUid });
         }
         break;
@@ -102,11 +106,11 @@ wss.on("connection", (ws) => {
 
   ws.on("close", () => {
     console.log("Client disconnected");
-    
+
     // Tìm user tương ứng với connection bị đóng
     for (let [uid, connection] of connectedUsers.entries()) {
       if (connection === ws) {
-        const user = users.find(u => u.uid === uid);
+        const user = users.find((u) => u.uid === uid);
         if (user) {
           user.isOnline = false;
           broadcast({ type: "user_offline", uid: uid });
