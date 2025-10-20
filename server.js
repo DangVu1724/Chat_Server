@@ -31,7 +31,7 @@ wss.on("connection", (ws) => {
         ws.send(
           JSON.stringify({
             type: "init",
-            users: users.filter((u) => u.uid !== user.uid),
+            users: users,
             messages: messages, // Gửi tất cả tin nhắn cũ
           })
         );
