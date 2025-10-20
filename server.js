@@ -37,8 +37,8 @@ wss.on("connection", (ws) => {
         );
 
         // Thông báo user mới online cho tất cả client khác
-        broadcast({ type: "new_user", user }, ws);
-        broadcast({ type: "user_online", uid: user.uid }, ws);
+        broadcast({ type: "new_user", user });
+        broadcast({ type: "user_online", uid: user.uid });
         break;
 
       case "message":
