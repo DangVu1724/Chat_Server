@@ -6,14 +6,13 @@ const pub = new Redis(redisUrl);
 const sub = new Redis(redisUrl);
 
 const wss = new WebSocket.Server({ port: 8080 }, () => {
-  console.log(" WebSocket Server is running on port 8080");
+  console.log("WebSocket Server is running on port 8080");
 });
 
-let users = []; 
-let messages = []; 
-let connectedUsers = new Map(); 
+let users = [];
+let messages = [];
+let connectedUsers = new Map();
 
-// Hàm broadcast gửi cho tất cả client (trừ một ws nếu cần)
 function broadcast(data, excludeWs = null) {
   wss.clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN && client !== excludeWs) {
@@ -30,21 +29,20 @@ wss.on("connection", (ws) => {
     const data = JSON.parse(msg);
 
     switch (data.type) {
-      // 🔹 Khi user mới connect
       case "connect": {
         const user = data.user;
         user.isOnline = true;
 
-        const existingUserIndex = users.findIndex((u) => u.uid === user.uid);
-        if (existingUserIndex !== -1) {
-          users[existingUserIndex] = user;
+        const existingIndex = users.findIndex((u) => u.uid === user.uid);
+        if (existingIndex !== -1) {
+          users[existingIndex] = user;
         } else {
           users.push(user);
         }
 
         connectedUsers.set(user.uid, ws);
 
-        // Gửi dữ liệu khởi tạo
+        // Gửi dữ liệu ban đầu
         ws.send(
           JSON.stringify({
             type: "init",
@@ -53,7 +51,7 @@ wss.on("connection", (ws) => {
           })
         );
 
-        //  Kiểm tra tin nhắn offline trong Redis
+        // Gửi tin nhắn offline (nếu có)
         (async () => {
           const offlineMsgs = await pub.lrange(`offline:${user.uid}`, 0, -1);
           if (offlineMsgs.length > 0) {
@@ -70,18 +68,22 @@ wss.on("connection", (ws) => {
         break;
       }
 
-      //  Khi user gửi tin nhắn
+      // Khi user gửi tin nhắn
       case "message": {
         const msgData = data.message;
+
+        // Thêm timestamp nếu thiếu
         if (!msgData.timestamp) msgData.timestamp = new Date().toISOString();
+
+        // Lưu lại tin nhắn vào bộ nhớ
         messages.push(msgData);
 
-        // Publish qua Redis để phân tán
+        // Publish qua Redis
         pub.publish("chat_channel", JSON.stringify(msgData));
         break;
       }
 
-      //  Cập nhật tin nhắn
+      // Cập nhật tin nhắn
       case "message_update": {
         const updated = data.message;
         const idx = messages.findIndex((m) => m.id === updated.id);
@@ -92,7 +94,7 @@ wss.on("connection", (ws) => {
         break;
       }
 
-      //  Xóa tin nhắn
+      // Xóa tin nhắn
       case "message_delete": {
         const messageId = data.messageId;
         const index = messages.findIndex((m) => m.id === messageId);
@@ -103,18 +105,13 @@ wss.on("connection", (ws) => {
         break;
       }
 
-      //  Yêu cầu đồng bộ tin nhắn
+      // Đồng bộ tin nhắn
       case "sync_messages": {
-        ws.send(
-          JSON.stringify({
-            type: "sync_messages",
-            messages,
-          })
-        );
+        ws.send(JSON.stringify({ type: "sync_messages", messages }));
         break;
       }
 
-      //  User online / offline
+      // User online/offline
       case "user_online": {
         const uid = data.uid;
         const u = users.find((x) => x.uid === uid);
@@ -137,9 +134,9 @@ wss.on("connection", (ws) => {
     }
   });
 
-  //  Khi client ngắt kết nối
+  // Khi client ngắt kết nối
   ws.on("close", () => {
-    console.log(" Client disconnected");
+    console.log("Client disconnected");
 
     for (let [uid, connection] of connectedUsers.entries()) {
       if (connection === ws) {
@@ -156,19 +153,32 @@ wss.on("connection", (ws) => {
 });
 
 
+// Xử lý tin nhắn từ Redis Pub/Sub
 sub.subscribe("chat_channel");
 sub.on("message", async (channel, message) => {
   const msgData = JSON.parse(message);
-  const recipientWs = connectedUsers.get(msgData.to);
+
+  if (msgData.isGroup || msgData.roomId === "global") {
+    broadcast({ type: "message", message: msgData });
+    return;
+  }
+
+  const receiverId = msgData.receiverId;
+  if (!receiverId) return;
+
+  const recipientWs = connectedUsers.get(receiverId);
 
   if (recipientWs && recipientWs.readyState === WebSocket.OPEN) {
     recipientWs.send(JSON.stringify({ type: "message", message: msgData }));
   } else {
-    await pub.rpush(`offline:${msgData.to}`, JSON.stringify(msgData));
-    console.log(`Lưu tin nhắn offline cho user ${msgData.to}`);
+    await pub.rpush(`offline:${receiverId}`, JSON.stringify(msgData));
+    console.log(`Lưu tin nhắn offline cho user ${receiverId}`);
   }
 
-  broadcast({ type: "message", message: msgData });
+  const senderWs = connectedUsers.get(msgData.senderId);
+  if (senderWs && senderWs.readyState === WebSocket.OPEN) {
+    senderWs.send(JSON.stringify({ type: "message", message: msgData }));
+  }
 });
 
 console.log("Server with Redis Pub/Sub ready!");
