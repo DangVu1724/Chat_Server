@@ -9,9 +9,9 @@ const wss = new WebSocket.Server({ port: 8080 }, () => {
   console.log("WebSocket Server is running on port 8080");
 });
 
-let users = [];
-let messages = [];
-let connectedUsers = new Map();
+
+const connectedUsers = new Map();
+
 
 function broadcast(data, excludeWs = null) {
   wss.clients.forEach((client) => {
@@ -23,100 +23,77 @@ function broadcast(data, excludeWs = null) {
 
 // Khi client kết nối
 wss.on("connection", (ws) => {
-  console.log(" Client connected");
+  console.log("Client connected");
 
-  ws.on("message", (msg) => {
+  ws.on("message", async (msg) => {
     const data = JSON.parse(msg);
 
     switch (data.type) {
+
       case "connect": {
         const user = data.user;
         user.isOnline = true;
 
-        const existingIndex = users.findIndex((u) => u.uid === user.uid);
-        if (existingIndex !== -1) {
-          users[existingIndex] = user;
-        } else {
-          users.push(user);
-        }
+        // Lưu user vào Redis 
+        await pub.hset('user', user.uid, JSON.stringify(user));
 
+        // Lấy toàn bộ user từ Redis để gửi init
+        const allUsers = await pub.hgetall('user');
+        const userList = Object.values(allUsers).map(u => JSON.parse(u));
+        ws.send(JSON.stringify({ type: "init_users", users: userList }));
+
+        // Lưu WebSocket cho user
         connectedUsers.set(user.uid, ws);
 
-        // Gửi dữ liệu ban đầu
-        ws.send(
-          JSON.stringify({
-            type: "init",
-            users,
-            messages,
-          })
-        );
+        // Gửi offline messages cá nhân
+        const offlineMsgs = await pub.lrange(`offline:${user.uid}`, 0, -1);
+        for (const m of offlineMsgs) {
+          ws.send(JSON.stringify({ type: "message", message: JSON.parse(m) }));
+        }
+        await pub.del(`offline:${user.uid}`);
 
-        // Gửi tin nhắn offline (nếu có)
-        (async () => {
-          const offlineMsgs = await pub.lrange(`offline:${user.uid}`, 0, -1);
-          if (offlineMsgs.length > 0) {
-            console.log(`📨 Gửi ${offlineMsgs.length} tin nhắn offline cho ${user.name}`);
-            for (const msg of offlineMsgs) {
-              ws.send(JSON.stringify({ type: "message", message: JSON.parse(msg) }));
-            }
-            await pub.del(`offline:${user.uid}`);
-          }
-        })();
+        // Gửi offline messages global
+        const globalOfflineMsgs = await pub.lrange(`offline:global`, 0, -1);
+        for (const m of globalOfflineMsgs) {
+          ws.send(JSON.stringify({ type: "message", message: JSON.parse(m) }));
+        }
 
-        broadcast({ type: "new_user", user });
-        broadcast({ type: "user_online", uid: user.uid });
+        broadcast({ type: "new_user", user }, ws);
+        broadcast({ type: "user_online", uid: user.uid }, ws);
+
         break;
       }
 
-      // Khi user gửi tin nhắn
       case "message": {
         const msgData = data.message;
-
-        // Thêm timestamp nếu thiếu
         if (!msgData.timestamp) msgData.timestamp = new Date().toISOString();
 
-        // Lưu lại tin nhắn vào bộ nhớ
-        messages.push(msgData);
-
-        // Publish qua Redis
+        // Publish message qua Redis
         pub.publish("chat_channel", JSON.stringify(msgData));
         break;
       }
 
-      // Cập nhật tin nhắn
       case "message_update": {
         const updated = data.message;
-        const idx = messages.findIndex((m) => m.id === updated.id);
-        if (idx !== -1) {
-          messages[idx] = updated;
-          broadcast({ type: "message_update", message: updated });
-        }
+        // Publish update qua Redis để mọi server/client nhận
+        pub.publish("chat_channel", JSON.stringify({ ...updated, _type: "update" }));
         break;
       }
 
-      // Xóa tin nhắn
       case "message_delete": {
         const messageId = data.messageId;
-        const index = messages.findIndex((m) => m.id === messageId);
-        if (index !== -1) {
-          messages.splice(index, 1);
-          broadcast({ type: "message_delete", messageId });
-        }
+        pub.publish("chat_channel", JSON.stringify({ id: messageId, _type: "delete" }));
         break;
       }
 
-      // Đồng bộ tin nhắn
-      case "sync_messages": {
-        ws.send(JSON.stringify({ type: "sync_messages", messages }));
-        break;
-      }
-
-      // User online/offline
       case "user_online": {
         const uid = data.uid;
-        const u = users.find((x) => x.uid === uid);
-        if (u) {
-          u.isOnline = true;
+        const userStr = await pub.hget('user', uid);
+        if (userStr) {
+          const user = JSON.parse(userStr);
+          user.isOnline = true;
+          await pub.hset('user', uid, JSON.stringify(user));
+          ws.send(JSON.stringify({ type: "user_online", uid: user.uid }));
           broadcast({ type: "user_online", uid });
         }
         break;
@@ -124,9 +101,11 @@ wss.on("connection", (ws) => {
 
       case "user_offline": {
         const uid = data.uid;
-        const u = users.find((x) => x.uid === uid);
-        if (u) {
-          u.isOnline = false;
+        const userStr = await pub.hget('user', uid);
+        if (userStr) {
+          const user = JSON.parse(userStr);
+          user.isOnline = false;
+          await pub.hset('user', uid, JSON.stringify(user));
           broadcast({ type: "user_offline", uid });
         }
         break;
@@ -135,44 +114,56 @@ wss.on("connection", (ws) => {
   });
 
   // Khi client ngắt kết nối
-  ws.on("close", () => {
+  ws.on("close", async () => {
     console.log("Client disconnected");
 
     for (let [uid, connection] of connectedUsers.entries()) {
       if (connection === ws) {
-        const user = users.find((u) => u.uid === uid);
-        if (user) {
+        connectedUsers.delete(uid);
+        const userStr = await pub.hget('user', uid);
+        if (userStr) {
+          const user = JSON.parse(userStr);
           user.isOnline = false;
+          await pub.hset('user', uid, JSON.stringify(user));
           broadcast({ type: "user_offline", uid });
         }
-        connectedUsers.delete(uid);
         break;
       }
     }
   });
 });
 
-
 // Xử lý tin nhắn từ Redis Pub/Sub
 sub.subscribe("chat_channel");
 sub.on("message", async (channel, message) => {
   const msgData = JSON.parse(message);
 
-  if (msgData.isGroup || msgData.roomId === "global") {
-    broadcast({ type: "message", message: msgData });
+  // Nếu là update hoặc delete
+  if (msgData._type === "update") {
+    broadcast({ type: "message_update", message: msgData });
+    return;
+  }
+  if (msgData._type === "delete") {
+    broadcast({ type: "message_delete", messageId: msgData.id });
     return;
   }
 
+  // Tin nhắn global/group
+  if (msgData.isGroup || msgData.roomId === "global") {
+    broadcast({ type: "message", message: msgData });
+    await pub.rpush(`offline:global`, JSON.stringify(msgData));
+    return;
+  }
+
+  // Tin nhắn cá nhân
   const receiverId = msgData.receiverId;
   if (!receiverId) return;
 
   const recipientWs = connectedUsers.get(receiverId);
-
   if (recipientWs && recipientWs.readyState === WebSocket.OPEN) {
     recipientWs.send(JSON.stringify({ type: "message", message: msgData }));
   } else {
     await pub.rpush(`offline:${receiverId}`, JSON.stringify(msgData));
-    console.log(`Lưu tin nhắn offline cho user ${receiverId}`);
   }
 
   const senderWs = connectedUsers.get(msgData.senderId);
