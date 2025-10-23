@@ -9,9 +9,7 @@ const wss = new WebSocket.Server({ port: 8080 }, () => {
   console.log("WebSocket Server is running on port 8080");
 });
 
-
 const connectedUsers = new Map();
-
 
 function broadcast(data, excludeWs = null) {
   wss.clients.forEach((client) => {
@@ -29,17 +27,16 @@ wss.on("connection", (ws) => {
     const data = JSON.parse(msg);
 
     switch (data.type) {
-
       case "connect": {
         const user = data.user;
         user.isOnline = true;
 
-        // Lưu user vào Redis 
-        await pub.hset('user', user.uid, JSON.stringify(user));
+        // Lưu user vào Redis
+        await pub.hset("user", user.uid, JSON.stringify(user));
 
         // Lấy toàn bộ user từ Redis để gửi init
-        const allUsers = await pub.hgetall('user');
-        const userList = Object.values(allUsers).map(u => JSON.parse(u));
+        const allUsers = await pub.hgetall("user");
+        const userList = Object.values(allUsers).map((u) => JSON.parse(u));
         ws.send(JSON.stringify({ type: "init_users", users: userList }));
 
         // Lưu WebSocket cho user
@@ -76,23 +73,29 @@ wss.on("connection", (ws) => {
       case "message_update": {
         const updated = data.message;
         // Publish update qua Redis để mọi server/client nhận
-        pub.publish("chat_channel", JSON.stringify({ ...updated, _type: "update" }));
+        pub.publish(
+          "chat_channel",
+          JSON.stringify({ ...updated, _type: "update" })
+        );
         break;
       }
 
       case "message_delete": {
         const messageId = data.messageId;
-        pub.publish("chat_channel", JSON.stringify({ id: messageId, _type: "delete" }));
+        pub.publish(
+          "chat_channel",
+          JSON.stringify({ id: messageId, _type: "delete" })
+        );
         break;
       }
 
       case "user_online": {
         const uid = data.uid;
-        const userStr = await pub.hget('user', uid);
+        const userStr = await pub.hget("user", uid);
         if (userStr) {
           const user = JSON.parse(userStr);
           user.isOnline = true;
-          await pub.hset('user', uid, JSON.stringify(user));
+          await pub.hset("user", uid, JSON.stringify(user));
           ws.send(JSON.stringify({ type: "user_online", uid: user.uid }));
           broadcast({ type: "user_online", uid });
         }
@@ -101,11 +104,11 @@ wss.on("connection", (ws) => {
 
       case "user_offline": {
         const uid = data.uid;
-        const userStr = await pub.hget('user', uid);
+        const userStr = await pub.hget("user", uid);
         if (userStr) {
           const user = JSON.parse(userStr);
           user.isOnline = false;
-          await pub.hset('user', uid, JSON.stringify(user));
+          await pub.hset("user", uid, JSON.stringify(user));
           broadcast({ type: "user_offline", uid });
         }
         break;
@@ -120,11 +123,11 @@ wss.on("connection", (ws) => {
     for (let [uid, connection] of connectedUsers.entries()) {
       if (connection === ws) {
         connectedUsers.delete(uid);
-        const userStr = await pub.hget('user', uid);
+        const userStr = await pub.hget("user", uid);
         if (userStr) {
           const user = JSON.parse(userStr);
           user.isOnline = false;
-          await pub.hset('user', uid, JSON.stringify(user));
+          await pub.hset("user", uid, JSON.stringify(user));
           broadcast({ type: "user_offline", uid });
         }
         break;
@@ -170,6 +173,10 @@ sub.on("message", async (channel, message) => {
   if (senderWs && senderWs.readyState === WebSocket.OPEN) {
     senderWs.send(JSON.stringify({ type: "message", message: msgData }));
   }
+});
+
+app.get("/health", (req, res) => {
+  res.status(200).send("OK");
 });
 
 console.log("Server with Redis Pub/Sub ready!");
