@@ -1,5 +1,7 @@
 const WebSocket = require("ws");
 const Redis = require("ioredis");
+const http = require("http");
+
 
 const redisUrl = process.env.REDIS_URL || "redis://127.0.0.1:6379";
 const pub = new Redis(redisUrl);
@@ -175,8 +177,16 @@ sub.on("message", async (channel, message) => {
   }
 });
 
-app.get("/health", (req, res) => {
-  res.status(200).send("OK");
+const server = http.createServer((req, res) => {
+  if (req.url === "/health") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok" }));
+  } else {
+    res.writeHead(404);
+    res.end();
+  }
 });
+
+server.listen(8081, () => console.log("HTTP health server at :8081"));
 
 console.log("Server with Redis Pub/Sub ready!");
